@@ -51,6 +51,10 @@ class _MyHomePageState extends State<MyHomePage> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _history = prefs.getStringList('value_history') ?? [];
+      final cachedUrl = prefs.getString('url_cache');
+      if (cachedUrl != null) {
+        _urlController.text = cachedUrl;
+      }
     });
   }
 
@@ -82,6 +86,8 @@ class _MyHomePageState extends State<MyHomePage> {
     }
 
     _addToHistory(_valueController.text);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('url_cache', _urlController.text);
 
     setState(() {
       _isLoading = true;
