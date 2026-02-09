@@ -34,7 +34,7 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _urlController = TextEditingController(
-    text: 'https://aimeio.neri.moe/replaceMe/card',
+    text: 'https://aime-ws.neri.moe/ReplaceME',
   );
   final TextEditingController _valueController = TextEditingController();
   bool _once = false;
@@ -194,7 +194,9 @@ class _MyHomePageState extends State<MyHomePage> {
                   leading: const Icon(Icons.history),
                   title: Text(val),
                   onTap: () {
-                    _valueController.text = val;
+                    setState(() {
+                      _valueController.text = val;
+                    });
                   },
                 ),
               ),
