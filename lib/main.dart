@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'remote_crypto.dart';
+import 'remote_keyboard.dart';
 import 'remote_sender.dart';
 
 void main() {
@@ -229,6 +230,55 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> _sendKeyboardKey(int keyCode) async {
+    if (!_canSendKeyboard) {
+      if (_passwordController.text.trim().isEmpty) {
+        _showMessage(
+          'A password is required to use remote key and other advanced features.',
+        );
+      }
+      return;
+    }
+    final salt = _salt;
+    if (salt == null) {
+      return;
+    }
+
+    final url = Uri.tryParse(_urlController.text.trim());
+    if (url == null || !_isHttpUrl(url)) {
+      _showMessage('Please enter a valid HTTP or HTTPS URL');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final password = _passwordController.text.trim();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_urlCacheKey, url.toString());
+      await prefs.setString(_passwordCacheKey, password);
+      await prefs.setString(_keyCacheKey, keyCode.toString());
+      await prefs.setString(_countCacheKey, '1');
+
+      final response = await RemoteSender(
+        client: _httpClient,
+        salt: salt,
+      ).sendKeyPress(url: url, key: keyCode, count: 1, password: password);
+      _showMessage('Response: ${response.statusCode}');
+    } catch (e, stackTrace) {
+      log('Keyboard request failed: $e', stackTrace: stackTrace);
+      _showMessage('Error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
   Future<void> _addToHistory(String value, SharedPreferences prefs) async {
     setState(() {
       _history = [
@@ -255,6 +305,12 @@ class _MyHomePageState extends State<MyHomePage> {
         count != null &&
         count >= 1 &&
         count <= 20;
+  }
+
+  bool get _canSendKeyboard {
+    return _isReady &&
+        !_isLoading &&
+        _passwordController.text.trim().isNotEmpty;
   }
 
   bool _isHttpUrl(Uri url) {
@@ -285,6 +341,7 @@ class _MyHomePageState extends State<MyHomePage> {
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(
+          key: const Key('remote-page-scroll'),
           children: [
             const SizedBox(height: 20),
             TextField(
@@ -339,6 +396,16 @@ class _MyHomePageState extends State<MyHomePage> {
             Text(
               'A password is required to use remote key and other advanced features.',
               style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Remote keyboard',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            RemoteKeyboard(
+              enabled: _canSendKeyboard,
+              onKeyPressed: _sendKeyboardKey,
             ),
             const SizedBox(height: 16),
             Row(
