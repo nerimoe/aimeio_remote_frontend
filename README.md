@@ -8,7 +8,8 @@ This is a small Flutter controller and protocol example for the HINATA AimeIO Re
 2. Enter a 20-character Aime access code and press **Send card**.
 3. Leave the password empty to use the legacy plain Card POST format.
 4. Set the same password in this app and the DLL's `[aimeio] remotePassword` setting to enable `E2EE_V1` card messages.
-5. Enter a virtual key code and press count. Key commands are available only when a password is set.
+5. Use the built-in Windows ANSI 104-key keyboard. Each tap sends one key event (`count: 1`); keyboard controls remain disabled until a password is set.
+6. Use the virtual key-code and press-count fields below the keyboard when testing a key value that is not represented by the layout.
 
 Card messages are posted to the configured URL. Encrypted key commands are posted to the same instance URL with `/event` appended, so they are not stored or replayed by the relay. Key command envelopes expire after 30 seconds and use the same AES-256-GCM and PBKDF2-HMAC-SHA256 parameters as HINATA Go and the Rust DLL.
 
