@@ -1,16 +1,23 @@
-# aimeio_remote_frontend
+# AimeIO Remote Frontend
 
-A new Flutter project.
+This is a small Flutter controller and protocol example for the HINATA AimeIO Remote backend.
 
-## Getting Started
+## Usage
 
-This project is a starting point for a Flutter application.
+1. Enter the Remote instance URL, such as `https://aime-ws.neri.moe/INSTANCE_ID`.
+2. Enter a 20-character Aime access code and press **Send card**.
+3. Leave the password empty to use the legacy plain Card POST format.
+4. Set the same password in this app and the DLL's `[aimeio] remotePassword` setting to enable `E2EE_V1` card messages.
+5. Enter a virtual key code and press count. Key commands are available only when a password is set.
 
-A few resources to get you started if this is your first Flutter project:
+Card messages are posted to the configured URL. Encrypted key commands are posted to the same instance URL with `/event` appended, so they are not stored or replayed by the relay. Key command envelopes expire after 30 seconds and use the same AES-256-GCM and PBKDF2-HMAC-SHA256 parameters as HINATA Go and the Rust DLL.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+The app stores the URL, password, recent card values, key settings, and the per-instance encryption salt in local `SharedPreferences` for this test/demo workflow.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Development
+
+```bash
+flutter pub get
+flutter test
+flutter analyze
+```
