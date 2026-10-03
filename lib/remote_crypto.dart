@@ -140,6 +140,9 @@ class RemoteCrypto {
       () =>
           _keyDerivation.deriveKeyFromPassword(password: password, nonce: salt),
     );
+    if (_keyCache.length > 64) {
+      _keyCache.remove(_keyCache.keys.first);
+    }
     try {
       return await future;
     } catch (_) {

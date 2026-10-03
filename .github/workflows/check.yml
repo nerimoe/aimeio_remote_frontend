@@ -1,0 +1,26 @@
+name: Flutter checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: echo "flutter=$(cat .flutter-version)" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.version.outputs.flutter }}
+          channel: stable
+          cache: true
+      - run: tools/check.sh
+      - name: Browser tests
+        run: flutter test --platform chrome test/remote_sender_test.dart test/widget_test.dart test/remote_keyboard_test.dart test/remote_crypto_test.dart

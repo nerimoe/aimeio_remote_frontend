@@ -2,21 +2,21 @@ import 'dart:developer';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'remote_crypto.dart';
 import 'remote_keyboard.dart';
 import 'remote_sender.dart';
+import 'remote_monitor.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  final http.Client? httpClient;
+  final RemoteConnector? connector;
 
-  const MyApp({super.key, this.httpClient});
+  const MyApp({super.key, this.connector});
 
   @override
   Widget build(BuildContext context) {
@@ -26,15 +26,15 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: MyHomePage(httpClient: httpClient),
+      home: MyHomePage(connector: connector),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  final http.Client? httpClient;
+  final RemoteConnector? connector;
 
-  const MyHomePage({super.key, this.httpClient});
+  const MyHomePage({super.key, this.connector});
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
@@ -56,9 +56,7 @@ class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _keyController = TextEditingController();
   final TextEditingController _countController = TextEditingController();
 
-  late final http.Client _httpClient;
-  late final bool _ownsHttpClient;
-  List<int>? _salt;
+  RemoteSender? _sender;
   bool _once = false;
   bool _passwordObscured = true;
   bool _isLoading = false;
@@ -68,9 +66,6 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
-    final suppliedClient = widget.httpClient;
-    _ownsHttpClient = suppliedClient == null;
-    _httpClient = suppliedClient ?? http.Client();
     _loadPreferences();
   }
 
@@ -81,9 +76,8 @@ class _MyHomePageState extends State<MyHomePage> {
     _passwordController.dispose();
     _keyController.dispose();
     _countController.dispose();
-    if (_ownsHttpClient) {
-      _httpClient.close();
-    }
+    _sender?.removeListener(_connectionChanged);
+    _sender?.dispose();
     super.dispose();
   }
 
@@ -108,7 +102,8 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
     setState(() {
-      _salt = salt;
+      _sender = RemoteSender(salt: salt, connector: widget.connector)
+        ..addListener(_connectionChanged);
       _history = prefs.getStringList(_historyCacheKey) ?? [];
       _passwordController.text = prefs.getString(_passwordCacheKey) ?? '';
       _keyController.text = prefs.getString(_keyCacheKey) ?? '32';
@@ -121,45 +116,45 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  Future<void> _sendCard() async {
-    if (!_canSendCard) {
-      return;
-    }
-    final salt = _salt;
-    if (salt == null) {
-      return;
-    }
+  void _connectionChanged() {
+    if (mounted) setState(() {});
+  }
 
-    final value = _valueController.text.trim();
-    final url = Uri.tryParse(_urlController.text.trim());
-    if (url == null || !_isHttpUrl(url)) {
-      _showMessage('Please enter a valid HTTP or HTTPS URL');
-      return;
-    }
+  Future<void> _savePreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_urlCacheKey, _urlController.text.trim());
+    await prefs.setString(_passwordCacheKey, _passwordController.text);
+    await prefs.setString(_keyCacheKey, _keyController.text.trim());
+    await prefs.setString(_countCacheKey, _countController.text.trim());
+  }
 
+  Future<void> _connect() async {
+    final sender = _sender;
+    if (sender == null) return;
+    try {
+      final url = RemoteSender.controllerUrl(
+        Uri.parse(_urlController.text.trim()),
+      );
+      await _savePreferences();
+      if (!mounted) return;
+      await sender.connect(url: url, password: _passwordController.text);
+    } catch (error) {
+      _showMessage('Connection error: $error');
+    }
+  }
+
+  Future<void> _command(Future<void> Function() send) async {
     setState(() {
       _isLoading = true;
     });
-
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_urlCacheKey, url.toString());
-      await prefs.setString(_passwordCacheKey, _passwordController.text.trim());
-      await prefs.setString(_keyCacheKey, _keyController.text.trim());
-      await prefs.setString(_countCacheKey, _countController.text.trim());
-      await _addToHistory(value, prefs);
-
-      final response = await RemoteSender(client: _httpClient, salt: salt)
-          .sendCard(
-            url: url,
-            value: value,
-            once: _once,
-            password: _passwordController.text.trim(),
-          );
-      _showMessage('Response: ${response.statusCode}');
-    } catch (e, stackTrace) {
-      log('Card request failed: $e', stackTrace: stackTrace);
-      _showMessage('Error: $e');
+      await _savePreferences();
+      if (!mounted) return;
+      await send();
+      _showMessage('Sent over WebSocket. Waiting for IO events.');
+    } catch (error, stackTrace) {
+      log('Remote command failed', error: error, stackTrace: stackTrace);
+      _showMessage('Error: $error');
     } finally {
       if (mounted) {
         setState(() {
@@ -167,116 +162,32 @@ class _MyHomePageState extends State<MyHomePage> {
         });
       }
     }
+  }
+
+  Future<void> _sendCard() async {
+    if (!_canSendCard) return;
+    final value = _valueController.text.trim();
+    await _command(() async {
+      await _sender!.sendCard(value: value, once: _once);
+      if (mounted) {
+        await _addToHistory(value, await SharedPreferences.getInstance());
+      }
+    });
   }
 
   Future<void> _sendKeyPress() async {
-    if (!_canSendKey) {
-      if (_passwordController.text.trim().isEmpty) {
-        _showMessage(
-          'A password is required to use remote key and other advanced features.',
-        );
-      }
-      return;
-    }
-    final salt = _salt;
-    if (salt == null) {
-      return;
-    }
-
-    final url = Uri.tryParse(_urlController.text.trim());
-    final key = int.tryParse(_keyController.text.trim());
-    final count = int.tryParse(_countController.text.trim());
-    if (url == null || !_isHttpUrl(url)) {
-      _showMessage('Please enter a valid HTTP or HTTPS URL');
-      return;
-    }
-    if (key == null || key < 0 || key > 0xffffffff) {
-      _showMessage('Key code must fit in an unsigned 32-bit integer');
-      return;
-    }
-    if (count == null || count < 1 || count > 20) {
-      _showMessage('Key press count must be between 1 and 20');
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_urlCacheKey, url.toString());
-      await prefs.setString(_passwordCacheKey, _passwordController.text.trim());
-      await prefs.setString(_keyCacheKey, key.toString());
-      await prefs.setString(_countCacheKey, count.toString());
-
-      final response = await RemoteSender(client: _httpClient, salt: salt)
-          .sendKeyPress(
-            url: url,
-            key: key,
-            count: count,
-            password: _passwordController.text.trim(),
-          );
-      _showMessage('Response: ${response.statusCode}');
-    } catch (e, stackTrace) {
-      log('Key request failed: $e', stackTrace: stackTrace);
-      _showMessage('Error: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
+    if (!_canSendKey) return;
+    await _command(
+      () => _sender!.sendKeyPress(
+        key: int.parse(_keyController.text.trim()),
+        count: int.parse(_countController.text.trim()),
+      ),
+    );
   }
 
   Future<void> _sendKeyboardKey(int keyCode) async {
-    if (!_canSendKeyboard) {
-      if (_passwordController.text.trim().isEmpty) {
-        _showMessage(
-          'A password is required to use remote key and other advanced features.',
-        );
-      }
-      return;
-    }
-    final salt = _salt;
-    if (salt == null) {
-      return;
-    }
-
-    final url = Uri.tryParse(_urlController.text.trim());
-    if (url == null || !_isHttpUrl(url)) {
-      _showMessage('Please enter a valid HTTP or HTTPS URL');
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      final password = _passwordController.text.trim();
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_urlCacheKey, url.toString());
-      await prefs.setString(_passwordCacheKey, password);
-      await prefs.setString(_keyCacheKey, keyCode.toString());
-      await prefs.setString(_countCacheKey, '1');
-
-      final response = await RemoteSender(
-        client: _httpClient,
-        salt: salt,
-      ).sendKeyPress(url: url, key: keyCode, count: 1, password: password);
-      _showMessage('Response: ${response.statusCode}');
-    } catch (e, stackTrace) {
-      log('Keyboard request failed: $e', stackTrace: stackTrace);
-      _showMessage('Error: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
+    if (!_canSendKeyboard) return;
+    await _command(() => _sender!.sendKeyPress(key: keyCode, count: 1));
   }
 
   Future<void> _addToHistory(String value, SharedPreferences prefs) async {
@@ -290,13 +201,17 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   bool get _canSendCard {
-    return _isReady && !_isLoading && _valueController.text.trim().length == 20;
+    return _isReady &&
+        _sender!.connected &&
+        !_isLoading &&
+        RegExp(r'^[0-9a-fA-F]{20}$').hasMatch(_valueController.text.trim());
   }
 
   bool get _canSendKey {
     final key = int.tryParse(_keyController.text.trim());
     final count = int.tryParse(_countController.text.trim());
     return _isReady &&
+        _sender!.connected &&
         !_isLoading &&
         _passwordController.text.trim().isNotEmpty &&
         key != null &&
@@ -309,13 +224,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
   bool get _canSendKeyboard {
     return _isReady &&
+        _sender!.connected &&
         !_isLoading &&
         _passwordController.text.trim().isNotEmpty;
-  }
-
-  bool _isHttpUrl(Uri url) {
-    return (url.scheme == 'http' || url.scheme == 'https') &&
-        url.host.isNotEmpty;
   }
 
   void _showMessage(String message) {
@@ -331,12 +242,17 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {});
   }
 
+  void _onConnectionSettingsChanged(String _) {
+    _sender?.disconnect();
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('AimeIO Sender'),
+        title: const Text('AimeIO Controller'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -348,18 +264,19 @@ class _MyHomePageState extends State<MyHomePage> {
               key: const Key('remote-url'),
               controller: _urlController,
               decoration: const InputDecoration(
-                labelText: 'URL',
+                labelText: 'Relay instance URL',
+                helperText: 'HTTP(S) or WS(S); controller role is automatic',
                 border: OutlineInputBorder(),
               ),
               keyboardType: TextInputType.url,
-              onChanged: _onFormChanged,
+              onChanged: _onConnectionSettingsChanged,
             ),
             const SizedBox(height: 16),
             TextField(
               key: const Key('aime-value'),
               controller: _valueController,
               decoration: const InputDecoration(
-                labelText: 'Access Code (20 digits)',
+                labelText: 'Access Code (20 characters)',
                 border: OutlineInputBorder(),
               ),
               keyboardType: TextInputType.number,
@@ -390,13 +307,45 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
               ),
               obscureText: _passwordObscured,
-              onChanged: _onFormChanged,
+              onChanged: _onConnectionSettingsChanged,
             ),
             const SizedBox(height: 8),
             Text(
               'A password is required to use remote key and other advanced features.',
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
+            const SizedBox(height: 16),
+            if (_sender != null) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      key: const Key('connect-relay'),
+                      onPressed: _sender!.active
+                          ? () => _sender!.disconnect()
+                          : _connect,
+                      icon: Icon(_sender!.active ? Icons.link_off : Icons.link),
+                      label: Text(_sender!.active ? 'Disconnect' : 'Connect'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    _sender!.state.name,
+                    key: const Key('connection-status'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_sender!.hello != null) Text(_sender!.hello!),
+              if (_sender!.lastError != null)
+                Text(
+                  _sender!.lastError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              const Text(
+                'Sent means written to the connection. IO events confirm card detection and delivery to the game.',
+              ),
+            ],
             const SizedBox(height: 16),
             const Text(
               'Remote keyboard',
@@ -473,6 +422,17 @@ class _MyHomePageState extends State<MyHomePage> {
               icon: const Icon(Icons.keyboard_alt_outlined),
               label: const Text('Press key'),
             ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('clear-card'),
+              onPressed: _sender?.connected == true && !_isLoading
+                  ? () => _command(() => _sender!.clearCard())
+                  : null,
+              icon: const Icon(Icons.remove_circle_outline),
+              label: const Text('Clear card'),
+            ),
+            const SizedBox(height: 24),
+            if (_sender != null) RemoteMonitor(sender: _sender!),
             const SizedBox(height: 32),
             if (_history.isNotEmpty) ...[
               const Text(
